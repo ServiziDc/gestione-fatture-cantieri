@@ -20,7 +20,7 @@
   header h1 { margin: 0; font-size: 18px; font-weight: 600; }
   header .sub { font-size: 12px; opacity: 0.85; margin-top: 2px; }
 
-  .container { padding: 16px; max-width: 800px; margin: 0 auto; }
+  .container { padding: 16px; max-width: 800px; margin: 0 auto; padding-bottom: 100px; }
 
   .card {
     background: white; border-radius: 12px; padding: 16px;
@@ -39,7 +39,7 @@
   button.success { background: #16a34a; }
   button.small { padding: 8px 12px; font-size: 13px; width: auto; }
 
-  input[type="text"], input[type="email"], input[type="password"] {
+  input[type="text"] {
     width: 100%; padding: 12px; border: 1px solid #d1d5db;
     border-radius: 8px; font-size: 15px; margin-bottom: 10px;
   }
@@ -97,7 +97,7 @@
   .modal h2 { margin: 0 0 16px 0; font-size: 18px; }
 
   .toast {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
     background: #1f2937; color: white; padding: 12px 20px;
     border-radius: 8px; font-size: 14px; z-index: 2000;
     box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none;
@@ -134,44 +134,14 @@
     vertical-align: middle; margin-right: 6px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  .login-box {
-    max-width: 360px; margin: 60px auto; padding: 24px;
-    background: white; border-radius: 12px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-  }
-
-  .logout-btn {
-    background: rgba(255,255,255,0.2); padding: 6px 10px;
-    border-radius: 6px; font-size: 12px; width: auto;
-    margin-left: auto; display: inline-block;
-  }
-  header .header-row { display: flex; align-items: center; }
-  header .header-row > div { flex: 1; }
 </style>
 </head>
 <body>
 
-<!-- LOGIN -->
-<div id="loginScreen" class="login-box" style="display:none;">
-  <h2 style="margin-top:0;">🔐 Gestione Fatture</h2>
-  <p style="color:#6b7280; font-size:14px;">Accedi con il tuo account Gama Service</p>
-  <input type="email" id="loginEmail" placeholder="Email">
-  <input type="password" id="loginPassword" placeholder="Password">
-  <button onclick="login()">Accedi</button>
-  <p id="loginError" style="color:#dc2626; font-size:13px; margin-top:10px;"></p>
-</div>
-
-<!-- APP -->
-<div id="app" style="display:none;">
+<div id="app">
   <header>
-    <div class="header-row">
-      <div>
-        <h1>📁 Gestione Fatture Cantieri</h1>
-        <div class="sub">Gama Service</div>
-      </div>
-      <button class="logout-btn" onclick="logout()">Esci</button>
-    </div>
+    <h1>📁 Gestione Fatture Cantieri</h1>
+    <div class="sub">Gama Service</div>
   </header>
 
   <div class="container">
@@ -192,14 +162,12 @@
 <!-- Firebase -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
-  from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, orderBy, where, serverTimestamp }
+import { getFirestore, collection, doc, addDoc, getDocs, deleteDoc, query, orderBy, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject, listAll }
   from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
 
-// ⚠️ SOSTITUISCI con la config del tuo progetto Firebase (stessa del gestionale ore)
+// ⚠️ SOSTITUISCI con la config del tuo progetto Firebase
 const firebaseConfig = {
   apiKey: "INSERISCI_QUI",
   authDomain: "INSERISCI_QUI",
@@ -210,56 +178,32 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
 
-window.fb = { auth, db, storage, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  collection, doc, addDoc, getDocs, deleteDoc, query, orderBy, where, serverTimestamp,
+window.fb = { db, storage,
+  collection, doc, addDoc, getDocs, deleteDoc, query, orderBy, serverTimestamp,
   ref, uploadBytes, getDownloadURL, deleteObject, listAll };
 
-onAuthStateChanged(auth, (user) => {
-  if (user) {
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    window.currentUser = user;
-    window.showCantieri();
-  } else {
-    document.getElementById('loginScreen').style.display = 'block';
-    document.getElementById('app').style.display = 'none';
-  }
+// Avvia subito senza login
+window.addEventListener('DOMContentLoaded', () => {
+  window.showCantieri();
 });
 </script>
 
-<!-- jsPDF per generare PDF -->
+<!-- jsPDF -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <script>
 // ============ STATO ============
 let state = {
-  level: 'cantieri', // cantieri | fornitori | fatture
+  level: 'cantieri',
   cantiereId: null,
   cantiereName: null,
   fornitoreId: null,
   fornitoreName: null,
-  photos: [] // {dataUrl, file}
+  photos: []
 };
-
-// ============ AUTH ============
-async function login() {
-  const email = document.getElementById('loginEmail').value.trim();
-  const pwd = document.getElementById('loginPassword').value;
-  const err = document.getElementById('loginError');
-  err.textContent = '';
-  try {
-    await fb.signInWithEmailAndPassword(fb.auth, email, pwd);
-  } catch (e) {
-    err.textContent = 'Errore: ' + (e.code === 'auth/invalid-credential' ? 'credenziali non valide' : e.message);
-  }
-}
-async function logout() {
-  await fb.signOut(fb.auth);
-}
 
 // ============ UI HELPER ============
 function toast(msg, ms = 2500) {
@@ -328,7 +272,7 @@ async function createCantiere() {
   if (!nome) { toast('Inserisci un nome'); return; }
   try {
     await fb.addDoc(fb.collection(fb.db, 'cantieri'), {
-      nome, creato: fb.serverTimestamp(), creatoDa: window.currentUser.email
+      nome, creato: fb.serverTimestamp()
     });
     closeModal();
     toast('Cantiere creato ✓');
@@ -434,7 +378,7 @@ async function deleteFattura(fullPath, name) {
   } catch (e) { toast('Errore: ' + e.message); }
 }
 
-// ============ FAB (azione contestuale) ============
+// ============ FAB ============
 function fabAction() {
   if (state.level === 'cantieri') {
     openModal(`<h2>➕ Nuovo cantiere</h2>
@@ -513,7 +457,6 @@ async function savePdf() {
 
     for (let i = 0; i < state.photos.length; i++) {
       const img = await loadImage(state.photos[i].dataUrl);
-      // adatta mantenendo proporzioni dentro A4
       const ratio = Math.min(pageW / img.width, pageH / img.height);
       const w = img.width * ratio;
       const h = img.height * ratio;
@@ -524,7 +467,7 @@ async function savePdf() {
     }
 
     const blob = pdf.output('blob');
-    btn.innerHTML = '<span class="loading"></span>Caricamento su Storage...';
+    btn.innerHTML = '<span class="loading"></span>Caricamento...';
 
     const ts = new Date();
     const pad = n => String(n).padStart(2, '0');
@@ -564,8 +507,6 @@ window.openPhotoModal = openPhotoModal;
 window.addPhotos = addPhotos;
 window.removePhoto = removePhoto;
 window.savePdf = savePdf;
-window.login = login;
-window.logout = logout;
 window.closeModal = closeModal;
 </script>
 
