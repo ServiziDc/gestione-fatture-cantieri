@@ -101,6 +101,13 @@
     display: flex; align-items: center; justify-content: center;
     cursor: pointer; font-size: 14px; font-weight: bold;
   }
+  .photo-thumb .rotate-btn {
+    position: absolute; bottom: 4px; right: 4px;
+    background: rgba(37,99,235,0.9); color: white;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 13px;
+  }
 
   .modal-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,0.5);
@@ -152,6 +159,40 @@
     vertical-align: middle; margin-right: 6px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== EDITOR SCANSIONE ===== */
+  .scan-stage {
+    position: relative; width: 100%; background: #111;
+    border-radius: 10px; overflow: hidden; margin: 10px 0;
+    touch-action: none;
+  }
+  .scan-stage canvas { display: block; width: 100%; }
+  .scan-overlay {
+    position: absolute; inset: 0; pointer-events: none;
+  }
+  .corner-handle {
+    position: absolute; width: 32px; height: 32px;
+    margin-left: -16px; margin-top: -16px;
+    border: 3px solid #2563eb; border-radius: 50%;
+    background: rgba(37,99,235,0.25);
+    pointer-events: auto; cursor: grab; touch-action: none;
+    z-index: 5;
+  }
+  .corner-handle:active { cursor: grabbing; background: rgba(37,99,235,0.5); }
+  .scan-hint {
+    font-size: 12px; color: #6b7280; text-align: center;
+    margin: 6px 0 0;
+  }
+  .scan-filters { display: flex; gap: 6px; margin: 10px 0; }
+  .scan-filters button {
+    flex: 1; padding: 8px; font-size: 12px; background: #e5e7eb; color: #374151;
+  }
+  .scan-filters button.active { background: #2563eb; color: white; }
+  .processing-overlay {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-size: 13px; z-index: 10;
+  }
 </style>
 </head>
 <body>
@@ -212,6 +253,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
 <!-- jsPDF -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<!-- OpenCV.js per scansione automatica (rilevamento bordi + raddrizzamento) -->
+<script>
+  window.cvReady = false;
+  var Module = { onRuntimeInitialized() { window.cvReady = true; } };
+</script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="window.cvLoaded=true;"></script>
 
 <script>
 // ============ STATO ============
@@ -414,17 +462,25 @@ function fabAction() {
   }
 }
 
-// ============ FOTO → PDF ============
+// ============ FOTO → SCANSIONE → PDF ============
+// state.photos = [{ scannedDataUrl }]  (pagine già scansionate, pronte per il PDF)
+// scan = stato temporaneo dell'editor di scansione corrente
+
+let scan = null;
+
 function openPhotoModal() {
   state.photos = [];
   openModal(`
-    <h2>📸 Scatta fattura</h2>
+    <h2>📸 Scansiona fattura</h2>
     <p style="color:#6b7280; font-size:13px; margin:0 0 12px;">
-      Scatta una o più foto. Più foto = PDF multipagina.
+      Scatta la foto del foglio. L'app riconosce i bordi, raddrizza e applica il filtro scansione.
+    </p>
+    <p style="background:#fef3c7; color:#92400e; font-size:12px; padding:8px 10px; border-radius:8px; margin:0 0 12px;">
+      💡 Per un ritaglio perfetto, appoggia la fattura su una superficie scura (sedile, cartellina, tavolo scuro).
     </p>
     <input type="file" id="photoInput" accept="image/*" capture="environment"
-           multiple style="display:none;" onchange="addPhotos(event)">
-    <button onclick="document.getElementById('photoInput').click()">📷 Scatta / Aggiungi foto</button>
+           style="display:none;" onchange="onPhotoPicked(event)">
+    <button onclick="document.getElementById('photoInput').click()">📷 Scatta foto</button>
     <div id="photoPreview" class="photo-preview"></div>
     <div id="photoActions" style="display:none;">
       <button class="success" style="margin-top:12px;" id="saveBtn" onclick="savePdf()">💾 Salva come PDF</button>
@@ -433,17 +489,409 @@ function openPhotoModal() {
   `);
 }
 
-function addPhotos(event) {
-  const files = Array.from(event.target.files);
-  files.forEach(file => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      state.photos.push({ dataUrl: e.target.result, file });
-      renderPhotoPreview();
-    };
-    reader.readAsDataURL(file);
-  });
+// 1) Foto scattata -> apri editor di ritaglio/scansione
+function onPhotoPicked(event) {
+  const file = event.target.files[0];
   event.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => openScanEditor(e.target.result);
+  reader.readAsDataURL(file);
+}
+
+// 2) Editor scansione: mostra foto + 4 maniglie agli angoli del foglio rilevato
+async function openScanEditor(dataUrl) {
+  const img = await loadImage(dataUrl);
+
+  // riduco la risoluzione di lavoro per fluidità (max 1500px lato lungo)
+  const MAXW = 1500;
+  const sc = Math.min(1, MAXW / Math.max(img.width, img.height));
+  const W = Math.round(img.width * sc);
+  const H = Math.round(img.height * sc);
+
+  openModal(`
+    <h2>✂️ Sistema i bordi</h2>
+    <div class="scan-stage" id="scanStage">
+      <canvas id="scanCanvas" width="${W}" height="${H}"></canvas>
+      <svg class="scan-overlay" id="scanSvg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <polygon id="scanPoly" fill="rgba(37,99,235,0.15)" stroke="#2563eb" stroke-width="3"/>
+      </svg>
+      <div class="corner-handle" data-i="0"></div>
+      <div class="corner-handle" data-i="1"></div>
+      <div class="corner-handle" data-i="2"></div>
+      <div class="corner-handle" data-i="3"></div>
+      <div class="processing-overlay" id="scanProcessing" style="display:none;">
+        <span><span class="loading"></span>Elaborazione...</span>
+      </div>
+    </div>
+    <p class="scan-hint">Trascina i 4 angoli per adattarli al foglio</p>
+    <div class="scan-filters" id="scanFilters">
+      <button data-f="bw" class="active">⬛ B/N nitido</button>
+      <button data-f="gray">◧ Grigi</button>
+      <button data-f="color">🎨 Colore</button>
+    </div>
+    <button class="success" id="applyScanBtn" onclick="applyScan()">✓ Applica scansione</button>
+    <button class="secondary" style="margin-top:8px;" onclick="reopenPhotoModal()">Annulla</button>
+  `);
+
+  // disegno la foto sul canvas
+  const canvas = document.getElementById('scanCanvas');
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, W, H);
+
+  scan = {
+    dataUrl, img, W, H,
+    corners: null,
+    filter: 'bw'
+  };
+
+  // rilevamento automatico bordi
+  scan.corners = detectDocumentCorners(canvas) || defaultCorners(W, H);
+
+  setupCornerDragging();
+  drawScanPoly();
+
+  // filtri
+  document.getElementById('scanFilters').querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('#scanFilters button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      scan.filter = b.dataset.f;
+    };
+  });
+}
+
+function defaultCorners(W, H) {
+  const mx = W * 0.08, my = H * 0.08;
+  return [
+    { x: mx, y: my },
+    { x: W - mx, y: my },
+    { x: W - mx, y: H - my },
+    { x: mx, y: H - my }
+  ];
+}
+
+// Rilevamento automatico del foglio con OpenCV
+function detectDocumentCorners(canvas) {
+  if (!window.cv || !window.cvReady) return null;
+  try {
+    const src = cv.imread(canvas);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(9, 9), 0);
+
+    // Otsu threshold: separa il foglio chiaro dallo sfondo scuro
+    const th = new cv.Mat();
+    cv.threshold(gray, th, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    // chiudo i buchi (testo interno) per ottenere il foglio pieno
+    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(25, 25));
+    cv.morphologyEx(th, th, cv.MORPH_CLOSE, k);
+    cv.morphologyEx(th, th, cv.MORPH_CLOSE, k);
+
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(th, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    const imgArea = canvas.width * canvas.height;
+
+    // trovo il contorno più grande
+    let bigIdx = -1, bigArea = 0;
+    for (let i = 0; i < contours.size(); i++) {
+      const a = cv.contourArea(contours.get(i));
+      if (a > bigArea) { bigArea = a; bigIdx = i; }
+    }
+
+    let corners = null;
+    if (bigIdx >= 0 && bigArea > imgArea * 0.15) {
+      const big = contours.get(bigIdx);
+      const peri = cv.arcLength(big, true);
+
+      // provo ad approssimare a 4 vertici con diverse tolleranze
+      let quad = null;
+      for (const eps of [0.02, 0.03, 0.05]) {
+        const approx = new cv.Mat();
+        cv.approxPolyDP(big, approx, eps * peri, true);
+        if (approx.rows === 4) { quad = approx; break; }
+        approx.delete();
+      }
+
+      const pts = [];
+      if (quad) {
+        for (let i = 0; i < 4; i++) pts.push({ x: quad.data32S[i*2], y: quad.data32S[i*2+1] });
+        quad.delete();
+      } else {
+        // fallback: rettangolo ruotato che racchiude il foglio
+        const rot = cv.minAreaRect(big);
+        const cx = rot.center.x, cy = rot.center.y;
+        const w2 = rot.size.width / 2, h2 = rot.size.height / 2;
+        const ang = rot.angle * Math.PI / 180;
+        const cos = Math.cos(ang), sin = Math.sin(ang);
+        // 4 vertici del rettangolo ruotato attorno al centro
+        const local = [[-w2,-h2],[w2,-h2],[w2,h2],[-w2,h2]];
+        for (const [lx, ly] of local) {
+          pts.push({ x: cx + lx*cos - ly*sin, y: cy + lx*sin + ly*cos });
+        }
+      }
+      corners = orderCorners(pts);
+    }
+
+    src.delete(); gray.delete(); th.delete(); k.delete();
+    contours.delete(); hierarchy.delete();
+    return corners;
+  } catch (e) {
+    console.warn('Rilevamento bordi fallito:', e);
+    return null;
+  }
+}
+
+// ordina gli angoli: top-left, top-right, bottom-right, bottom-left
+function orderCorners(pts) {
+  const sum = pts.map(p => p.x + p.y);
+  const diff = pts.map(p => p.x - p.y);
+  return [
+    pts[sum.indexOf(Math.min(...sum))],   // TL
+    pts[diff.indexOf(Math.max(...diff))], // TR
+    pts[sum.indexOf(Math.max(...sum))],   // BR
+    pts[diff.indexOf(Math.min(...diff))]  // BL
+  ];
+}
+
+// ---- Gestione trascinamento maniglie ----
+function setupCornerDragging() {
+  const stage = document.getElementById('scanStage');
+  const handles = stage.querySelectorAll('.corner-handle');
+  positionHandles();
+
+  handles.forEach(h => {
+    const i = +h.dataset.i;
+    const move = (clientX, clientY) => {
+      const rect = document.getElementById('scanCanvas').getBoundingClientRect();
+      const x = (clientX - rect.left) / rect.width * scan.W;
+      const y = (clientY - rect.top) / rect.height * scan.H;
+      scan.corners[i] = {
+        x: Math.max(0, Math.min(scan.W, x)),
+        y: Math.max(0, Math.min(scan.H, y))
+      };
+      positionHandles();
+      drawScanPoly();
+    };
+    h.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      move(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+    let dragging = false;
+    h.addEventListener('mousedown', () => dragging = true);
+    window.addEventListener('mousemove', (e) => { if (dragging) move(e.clientX, e.clientY); });
+    window.addEventListener('mouseup', () => dragging = false);
+  });
+}
+
+function positionHandles() {
+  const stage = document.getElementById('scanStage');
+  if (!stage) return;
+  const canvas = document.getElementById('scanCanvas');
+  const dispW = canvas.clientWidth, dispH = canvas.clientHeight;
+  stage.querySelectorAll('.corner-handle').forEach(h => {
+    const i = +h.dataset.i;
+    const c = scan.corners[i];
+    h.style.left = (c.x / scan.W * dispW) + 'px';
+    h.style.top = (c.y / scan.H * dispH) + 'px';
+  });
+}
+
+function drawScanPoly() {
+  const poly = document.getElementById('scanPoly');
+  if (!poly) return;
+  poly.setAttribute('points', scan.corners.map(c => `${c.x},${c.y}`).join(' '));
+}
+
+// 3) Applica: raddrizza (warp prospettico) + filtro, poi aggiunge alla lista pagine
+async function applyScan() {
+  document.getElementById('scanProcessing').style.display = 'flex';
+  await new Promise(r => setTimeout(r, 30)); // lascia ridisegnare
+
+  try {
+    let resultDataUrl;
+    if (window.cv && window.cvReady) {
+      resultDataUrl = warpAndFilter();
+    } else {
+      // fallback: niente OpenCV -> solo filtro sull'immagine intera
+      resultDataUrl = simpleFilter();
+    }
+    // invece di salvare subito, mostro l'anteprima per controllare l'orientamento
+    showScanPreview(resultDataUrl);
+  } catch (e) {
+    document.getElementById('scanProcessing').style.display = 'none';
+    toast('Errore scansione: ' + e.message);
+  }
+}
+
+// Anteprima del risultato con pulsante Ruota per sistemare l'orientamento
+function showScanPreview(dataUrl) {
+  openModal(`
+    <h2>👁️ Controlla l'orientamento</h2>
+    <p style="color:#6b7280; font-size:13px; margin:0 0 12px;">
+      Se il testo è girato o capovolto, premi 🔄 finché è dritto e leggibile.
+    </p>
+    <div style="text-align:center; background:#111; border-radius:10px; padding:10px; margin-bottom:10px;">
+      <img id="previewImg" src="${dataUrl}" style="max-width:100%; max-height:55vh; border-radius:4px;">
+    </div>
+    <button class="secondary" onclick="rotatePreview()">🔄 Ruota di 90°</button>
+    <button class="success" style="margin-top:8px;" onclick="confirmScan()">✓ Conferma pagina</button>
+    <button class="secondary" style="margin-top:8px;" onclick="reopenPhotoModal()">Annulla</button>
+  `);
+  scan.previewDataUrl = dataUrl;
+}
+
+// Ruota l'anteprima di 90° in senso orario
+async function rotatePreview() {
+  const img = await loadImage(scan.previewDataUrl);
+  const c = document.createElement('canvas');
+  c.width = img.height; c.height = img.width;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width, 0);
+  ctx.rotate(Math.PI/2);
+  ctx.drawImage(img, 0, 0);
+  // mantengo PNG per il B/N, JPEG per gli altri
+  const isPng = scan.previewDataUrl.startsWith('data:image/png');
+  scan.previewDataUrl = isPng ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.7);
+  document.getElementById('previewImg').src = scan.previewDataUrl;
+}
+
+// Conferma: aggiunge la pagina e torna alla schermata principale
+function confirmScan() {
+  state.photos.push({ scannedDataUrl: scan.previewDataUrl });
+  reopenPhotoModal();
+  renderPhotoPreview();
+}
+
+function warpAndFilter() {
+  const canvas = document.getElementById('scanCanvas');
+  const src = cv.imread(canvas);
+
+  const [tl, tr, br, bl] = scan.corners;
+  const wTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+  const wBot = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const hL = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+  const hR = Math.hypot(br.x - tr.x, br.y - tr.y);
+  const outW = Math.round(Math.max(wTop, wBot));
+  const outH = Math.round(Math.max(hL, hR));
+
+  const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x,tl.y, tr.x,tr.y, br.x,br.y, bl.x,bl.y]);
+  const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0,0, outW,0, outW,outH, 0,outH]);
+  const M = cv.getPerspectiveTransform(srcTri, dstTri);
+  const dst = new cv.Mat();
+  cv.warpPerspective(src, dst, M, new cv.Size(outW, outH));
+
+  // filtro
+  if (scan.filter === 'bw') {
+    cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY);
+    cv.adaptiveThreshold(dst, dst, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 31, 15);
+  } else if (scan.filter === 'gray') {
+    cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY);
+    cv.equalizeHist(dst, dst);
+  } else {
+    // colore migliorato: leggero aumento contrasto
+    dst.convertTo(dst, -1, 1.15, 8);
+  }
+
+  const out = document.createElement('canvas');
+  out.width = outW; out.height = outH;
+  cv.imshow(out, dst);
+
+  src.delete(); dst.delete(); M.delete(); srcTri.delete(); dstTri.delete();
+
+  // VERTICALE AUTOMATICO: se il foglio è orizzontale (più largo che alto),
+  // lo ruoto di 90° per renderlo verticale (A4 portrait)
+  let oriented = out;
+  if (out.width > out.height) {
+    oriented = rotateCanvas(out, 90);
+  }
+
+  // compressione: ridimensiona a max 1240px lato lungo (~150 DPI A4, leggibile)
+  return compressScan(oriented, scan.filter);
+}
+
+// Ruota un canvas di 90/180/270 gradi e restituisce un nuovo canvas
+function rotateCanvas(canvas, deg) {
+  const out = document.createElement('canvas');
+  const ctx = out.getContext('2d');
+  if (deg === 90 || deg === 270) {
+    out.width = canvas.height;
+    out.height = canvas.width;
+  } else {
+    out.width = canvas.width;
+    out.height = canvas.height;
+  }
+  ctx.save();
+  if (deg === 90) { ctx.translate(out.width, 0); ctx.rotate(Math.PI/2); }
+  else if (deg === 180) { ctx.translate(out.width, out.height); ctx.rotate(Math.PI); }
+  else if (deg === 270) { ctx.translate(0, out.height); ctx.rotate(-Math.PI/2); }
+  ctx.drawImage(canvas, 0, 0);
+  ctx.restore();
+  return out;
+}
+
+// Ridimensiona + comprime per file piccolo ma leggibile
+function compressScan(canvas, filter) {
+  const MAX_SIDE = 1240;
+  let { width: w, height: h } = canvas;
+  const sc = Math.min(1, MAX_SIDE / Math.max(w, h));
+  const nw = Math.round(w * sc), nh = Math.round(h * sc);
+
+  const small = document.createElement('canvas');
+  small.width = nw; small.height = nh;
+  const sctx = small.getContext('2d');
+  sctx.imageSmoothingEnabled = true;
+  sctx.imageSmoothingQuality = 'high';
+  sctx.drawImage(canvas, 0, 0, nw, nh);
+
+  // B/N: PNG (1 livello) comprime meglio del JPEG per testo nero su bianco.
+  // Grigi/Colore: JPEG con qualità media.
+  if (filter === 'bw') {
+    return small.toDataURL('image/png');
+  } else if (filter === 'gray') {
+    return small.toDataURL('image/jpeg', 0.6);
+  } else {
+    return small.toDataURL('image/jpeg', 0.65);
+  }
+}
+
+// Fallback senza OpenCV: applica solo un filtro b/n base
+function simpleFilter() {
+  const canvas = document.getElementById('scanCanvas');
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imgData.data;
+  if (scan.filter !== 'color') {
+    for (let i = 0; i < d.length; i += 4) {
+      let v = 0.3*d[i] + 0.59*d[i+1] + 0.11*d[i+2];
+      if (scan.filter === 'bw') v = v > 135 ? 255 : 0;
+      d[i] = d[i+1] = d[i+2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+  return compressScan(canvas, scan.filter);
+}
+
+function reopenPhotoModal() {
+  scan = null;
+  // riapre la schermata principale mantenendo le pagine già fatte
+  openModal(`
+    <h2>📸 Scansiona fattura</h2>
+    <p style="color:#6b7280; font-size:13px; margin:0 0 12px;">
+      Aggiungi altre pagine o salva il PDF.
+    </p>
+    <input type="file" id="photoInput" accept="image/*" capture="environment"
+           style="display:none;" onchange="onPhotoPicked(event)">
+    <button onclick="document.getElementById('photoInput').click()">📷 Aggiungi pagina</button>
+    <div id="photoPreview" class="photo-preview"></div>
+    <div id="photoActions" style="display:none;">
+      <button class="success" style="margin-top:12px;" id="saveBtn" onclick="savePdf()">💾 Salva come PDF</button>
+    </div>
+    <button class="secondary" style="margin-top:8px;" onclick="closeModal()">Annulla</button>
+  `);
+  renderPhotoPreview();
 }
 
 function renderPhotoPreview() {
@@ -451,11 +899,13 @@ function renderPhotoPreview() {
   if (!c) return;
   c.innerHTML = state.photos.map((p, i) =>
     `<div class="photo-thumb">
-      <img src="${p.dataUrl}">
+      <img src="${p.scannedDataUrl}">
       <div class="remove" onclick="removePhoto(${i})">×</div>
+      <div class="rotate-btn" onclick="rotatePage(${i})">🔄</div>
     </div>`
   ).join('');
-  document.getElementById('photoActions').style.display = state.photos.length > 0 ? 'block' : 'none';
+  const actions = document.getElementById('photoActions');
+  if (actions) actions.style.display = state.photos.length > 0 ? 'block' : 'none';
 }
 
 function removePhoto(i) {
@@ -463,26 +913,43 @@ function removePhoto(i) {
   renderPhotoPreview();
 }
 
+// Ruota una pagina già scansionata (dalle miniature)
+async function rotatePage(i) {
+  const img = await loadImage(state.photos[i].scannedDataUrl);
+  const c = document.createElement('canvas');
+  c.width = img.height; c.height = img.width;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width, 0);
+  ctx.rotate(Math.PI/2);
+  ctx.drawImage(img, 0, 0);
+  const isPng = state.photos[i].scannedDataUrl.startsWith('data:image/png');
+  state.photos[i].scannedDataUrl = isPng ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.7);
+  renderPhotoPreview();
+}
+
 async function savePdf() {
-  if (state.photos.length === 0) { toast('Nessuna foto'); return; }
+  if (state.photos.length === 0) { toast('Nessuna pagina'); return; }
   const btn = document.getElementById('saveBtn');
   btn.innerHTML = '<span class="loading"></span>Generazione PDF...';
   btn.disabled = true;
 
   try {
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
     const pageW = 210, pageH = 297;
 
     for (let i = 0; i < state.photos.length; i++) {
-      const img = await loadImage(state.photos[i].dataUrl);
+      const dataUrl = state.photos[i].scannedDataUrl;
+      const img = await loadImage(dataUrl);
       const ratio = Math.min(pageW / img.width, pageH / img.height);
       const w = img.width * ratio;
       const h = img.height * ratio;
       const x = (pageW - w) / 2;
       const y = (pageH - h) / 2;
       if (i > 0) pdf.addPage();
-      pdf.addImage(state.photos[i].dataUrl, 'JPEG', x, y, w, h);
+      // rileva il formato dall'header del dataURL (PNG per B/N, JPEG per gli altri)
+      const fmt = dataUrl.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+      pdf.addImage(dataUrl, fmt, x, y, w, h, undefined, 'FAST');
     }
 
     const blob = pdf.output('blob');
@@ -495,8 +962,9 @@ async function savePdf() {
 
     await fb.uploadBytes(fb.ref(fb.storage, path), blob, { contentType: 'application/pdf' });
 
+    const kb = Math.round(blob.size / 1024);
     closeModal();
-    toast('Fattura salvata ✓');
+    toast(`Fattura salvata ✓ (${kb} KB)`);
     showFatture(state.fornitoreId, state.fornitoreName);
   } catch (e) {
     btn.disabled = false;
@@ -523,7 +991,14 @@ window.createFornitore = createFornitore;
 window.deleteFattura = deleteFattura;
 window.fabAction = fabAction;
 window.openPhotoModal = openPhotoModal;
-window.addPhotos = addPhotos;
+window.onPhotoPicked = onPhotoPicked;
+window.openScanEditor = openScanEditor;
+window.applyScan = applyScan;
+window.showScanPreview = showScanPreview;
+window.rotatePreview = rotatePreview;
+window.confirmScan = confirmScan;
+window.rotatePage = rotatePage;
+window.reopenPhotoModal = reopenPhotoModal;
 window.removePhoto = removePhoto;
 window.savePdf = savePdf;
 window.closeModal = closeModal;
