@@ -566,12 +566,12 @@ async function showCantieri() {
     items.sort((a, b) => (a.nome || '').localeCompare(b.nome || ''));
     let html = '';
     items.forEach(c => {
-      html += `<div class="item" onclick="showFornitori('${c.id}','${escapeAttr(c.nome)}')">
-        <div class="item-info">
+      html += `<div class="item">
+        <div class="item-info" onclick="showFornitori('${c.id}','${escapeAttr(c.nome)}')">
           <div class="item-title">📂 ${escapeHtml(c.nome)}</div>
           <div class="item-sub">Cartella Fatture</div>
         </div>
-        <div class="item-arrow">›</div>
+        <button class="small danger" onclick="eliminaCantiere(event,'${c.id}','${escapeAttr(c.nome)}')">🗑</button>
       </div>`;
     });
     document.getElementById('view').innerHTML = html;
@@ -594,6 +594,57 @@ async function createCantiere() {
     toast('Cantiere creato ✓');
     showCantieri();
   } catch (e) { toast('Errore: ' + e.message); }
+}
+
+// Elimina un cantiere completo: conta le fatture, doppia conferma, poi cancella tutto
+async function eliminaCantiere(event, cantiereId, nome) {
+  event.stopPropagation(); // non aprire il cantiere
+
+  toast('Conteggio fatture in corso...');
+  // 1) raccolgo tutti i fornitori del cantiere
+  let fornitori = [];
+  try {
+    const snap = await fb.getDocs(fb.collection(fb.db, 'cantieri', cantiereId, 'fornitori'));
+    snap.forEach(d => fornitori.push(d.id));
+  } catch (e) { toast('Errore lettura: ' + e.message); return; }
+
+  // 2) conto le fatture (PDF) in tutti i fornitori
+  let pdfRefs = [];
+  for (const fId of fornitori) {
+    try {
+      const res = await fb.listAll(fb.ref(fb.storage, `fatture/${cantiereId}/${fId}`));
+      res.items.forEach(it => pdfRefs.push(it.fullPath));
+    } catch (e) { /* fornitore senza fatture, ignoro */ }
+  }
+  const numFatture = pdfRefs.length;
+
+  // 3) PRIMA conferma con avviso
+  const msg1 = numFatture > 0
+    ? `Il cantiere "${nome}" contiene ${numFatture} fattur${numFatture === 1 ? 'a' : 'e'} che verranno eliminate per sempre.\n\nVuoi continuare?`
+    : `Vuoi eliminare il cantiere "${nome}"?\n(Non contiene fatture)`;
+  if (!confirm(msg1)) return;
+
+  // 4) SECONDA conferma
+  if (!confirm(`⚠️ ULTIMA CONFERMA\n\nEliminare definitivamente "${nome}"${numFatture > 0 ? ` e le sue ${numFatture} fatture` : ''}?\n\nQuesta operazione NON è reversibile.`)) return;
+
+  // 5) cancellazione
+  toast('Eliminazione in corso...');
+  try {
+    // a) elimino i PDF da Storage
+    for (const path of pdfRefs) {
+      await fb.deleteObject(fb.ref(fb.storage, path));
+    }
+    // b) elimino i documenti fornitori da Firestore
+    for (const fId of fornitori) {
+      await fb.deleteDoc(fb.doc(fb.db, 'cantieri', cantiereId, 'fornitori', fId));
+    }
+    // c) elimino il cantiere
+    await fb.deleteDoc(fb.doc(fb.db, 'cantieri', cantiereId));
+    toast('Cantiere eliminato ✓');
+    showCantieri();
+  } catch (e) {
+    toast('Errore eliminazione: ' + e.message);
+  }
 }
 
 // ============ FORNITORI ============
@@ -1265,6 +1316,7 @@ window.showCantieri = showCantieri;
 window.showFornitori = showFornitori;
 window.showFatture = showFatture;
 window.createCantiere = createCantiere;
+window.eliminaCantiere = eliminaCantiere;
 window.createFornitore = createFornitore;
 window.deleteFattura = deleteFattura;
 window.fabAction = fabAction;
