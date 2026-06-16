@@ -360,6 +360,12 @@ onAuthStateChanged(auth, async (user) => {
 
 <!-- jsPDF -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- pdf.js (per rasterizzare PDF caricati dalla galleria) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
 
 <!-- OpenCV.js per scansione automatica (rilevamento bordi + raddrizzamento) -->
 <script>
@@ -786,7 +792,7 @@ function openPhotoModal() {
     </p>
     <input type="file" id="photoInput" accept="image/*" capture="environment"
            style="display:none;" onchange="onPhotoPicked(event)">
-    <input type="file" id="galleryInput" accept="image/*" multiple
+    <input type="file" id="galleryInput" accept="image/*,application/pdf" multiple
            style="display:none;" onchange="onPhotoPicked(event)">
     <div style="display:flex; gap:8px; margin-bottom:4px;">
       <button style="flex:1;" onclick="document.getElementById('photoInput').click()">📷 Scatta foto</button>
@@ -806,27 +812,27 @@ function onPhotoPicked(event) {
   event.target.value = '';
   if (!files.length) return;
 
-  if (files.length === 1) {
-    // flusso singolo: apri editor ritaglio come prima
+  if (files.length === 1 && files[0].type !== 'application/pdf') {
+    // flusso singolo immagine: apri editor ritaglio come prima
     const reader = new FileReader();
     reader.onload = (e) => openScanEditor(e.target.result);
     reader.readAsDataURL(files[0]);
   } else {
-    // multi-selezione: aggiungi tutte le immagini direttamente senza editor ritaglio
-    let pending = files.length;
-    const results = new Array(files.length);
-    files.forEach((file, i) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        results[i] = e.target.result;
-        pending--;
-        if (pending === 0) {
-          Promise.all(results.map(dataUrl => addGalleryPage(dataUrl)))
-            .then(() => reopenPhotoModal());
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    // multi-selezione o PDF: aggiungi tutto direttamente
+    const tasks = files.map(file => () => new Promise((resolve, reject) => {
+      if (file.type === 'application/pdf') {
+        const reader = new FileReader();
+        reader.onload = (e) => addGalleryPdf(e.target.result).then(resolve).catch(reject);
+        reader.readAsArrayBuffer(file);
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => addGalleryPage(e.target.result).then(resolve).catch(reject);
+        reader.readAsDataURL(file);
+      }
+    }));
+    // esegui in sequenza per mantenere l'ordine
+    tasks.reduce((chain, task) => chain.then(task), Promise.resolve())
+      .then(() => reopenPhotoModal());
   }
 }
 
@@ -843,6 +849,22 @@ async function addGalleryPage(dataUrl) {
   ctx.drawImage(img, 0, 0, W, H);
   const compressed = await compressScan(canvas, 'none');
   state.photos.push({ scannedDataUrl: compressed });
+}
+
+// Rasterizza tutte le pagine di un PDF e le aggiunge a state.photos
+async function addGalleryPdf(arrayBuffer) {
+  const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  for (let p = 1; p <= pdfDoc.numPages; p++) {
+    const page = await pdfDoc.getPage(p);
+    const scale = 2; // 150 DPI approx
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    const compressed = await compressScan(canvas, 'none');
+    state.photos.push({ scannedDataUrl: compressed });
+  }
 }
 
 // 2) Editor scansione: mostra foto + 4 maniglie agli angoli del foglio rilevato
@@ -1250,7 +1272,7 @@ function reopenPhotoModal() {
     </p>
     <input type="file" id="photoInput" accept="image/*" capture="environment"
            style="display:none;" onchange="onPhotoPicked(event)">
-    <input type="file" id="galleryInput" accept="image/*" multiple
+    <input type="file" id="galleryInput" accept="image/*,application/pdf" multiple
            style="display:none;" onchange="onPhotoPicked(event)">
     <div style="display:flex; gap:8px; margin-bottom:4px;">
       <button style="flex:1;" onclick="document.getElementById('photoInput').click()">📷 Aggiungi pagina</button>
