@@ -786,7 +786,12 @@ function openPhotoModal() {
     </p>
     <input type="file" id="photoInput" accept="image/*" capture="environment"
            style="display:none;" onchange="onPhotoPicked(event)">
-    <button onclick="document.getElementById('photoInput').click()">📷 Scatta foto</button>
+    <input type="file" id="galleryInput" accept="image/*"
+           style="display:none;" onchange="onPhotoPicked(event)">
+    <div style="display:flex; gap:8px; margin-bottom:4px;">
+      <button style="flex:1;" onclick="document.getElementById('photoInput').click()">📷 Scatta foto</button>
+      <button style="flex:1;" onclick="document.getElementById('galleryInput').click()">🖼️ Galleria</button>
+    </div>
     <div id="photoPreview" class="photo-preview"></div>
     <div id="photoActions" style="display:none;">
       <button class="success" style="margin-top:12px;" id="saveBtn" onclick="savePdf()">💾 Salva come PDF</button>
@@ -1210,7 +1215,12 @@ function reopenPhotoModal() {
     </p>
     <input type="file" id="photoInput" accept="image/*" capture="environment"
            style="display:none;" onchange="onPhotoPicked(event)">
-    <button onclick="document.getElementById('photoInput').click()">📷 Aggiungi pagina</button>
+    <input type="file" id="galleryInput" accept="image/*"
+           style="display:none;" onchange="onPhotoPicked(event)">
+    <div style="display:flex; gap:8px; margin-bottom:4px;">
+      <button style="flex:1;" onclick="document.getElementById('photoInput').click()">📷 Aggiungi pagina</button>
+      <button style="flex:1;" onclick="document.getElementById('galleryInput').click()">🖼️ Galleria</button>
+    </div>
     <div id="photoPreview" class="photo-preview"></div>
     <div id="photoActions" style="display:none;">
       <button class="success" style="margin-top:12px;" id="saveBtn" onclick="savePdf()">💾 Salva come PDF</button>
