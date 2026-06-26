@@ -738,13 +738,20 @@ async function showFatture(fornitoreId, fornitoreName) {
           <div class="file-name">${escapeHtml(it.name)}</div>
           <div class="file-meta">PDF</div>
         </div>
-        <button class="small success" onclick="window.open('${it.url}','_blank')">Apri</button>
+        <button class="small success" onclick="apriOVisualizzaFattura('${escapeAttr(it.url)}','${escapeAttr(it.name)}')" >Apri</button>
         ${delBtn}
       </div>`;
     });
     document.getElementById('view').innerHTML = html;
   } catch (e) {
     document.getElementById('view').innerHTML = `<div class="card" style="color:#dc2626;">Errore: ${e.message}</div>`;
+  }
+}
+
+function apriOVisualizzaFattura(url, name) {
+  window.open(url, '_blank');
+  if (window.isAdmin) {
+    toast('📄 Fattura visualizzata ✓');
   }
 }
 
@@ -1390,6 +1397,7 @@ window.fabAction = fabAction;
 window.openPhotoModal = openPhotoModal;
 window.onPhotoPicked = onPhotoPicked;
 window.openScanEditor = openScanEditor;
+window.apriOVisualizzaFattura = apriOVisualizzaFattura;
 window.applyScan = applyScan;
 window.showScanPreview = showScanPreview;
 window.rotatePreview = rotatePreview;
