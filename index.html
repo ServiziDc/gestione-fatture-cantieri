@@ -128,6 +128,12 @@
     box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: none;
   }
   .toast.show { display: block; animation: fadeIn 0.3s; }
+  .badge-visualizzata {
+    background: #fff; color: #111; border: 2px solid #111;
+    font-weight: 800; font-size: 13px; letter-spacing: 1px;
+    padding: 4px 12px; border-radius: 4px; white-space: nowrap;
+    flex-shrink: 0;
+  }
   @keyframes fadeIn { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
   .fab {
@@ -730,16 +736,20 @@ async function showFatture(fornitoreId, fornitoreName) {
     items.sort((a, b) => b.name.localeCompare(a.name));
     let html = '';
     window._fattureUrls = items.map(i => i.url);
+    window._fatturePaths = items.map(i => i.fullPath);
+    const _viste = JSON.parse(localStorage.getItem('fattureViste') || '{}');
     items.forEach((it, idx) => {
       const delBtn = window.isAdmin ? '' :
         `<button class="small danger" onclick="deleteFattura('${escapeAttr(it.fullPath)}','${escapeAttr(it.name)}')">🗑</button>`;
+      const badgeVista = (window.isAdmin && _viste[it.fullPath])
+        ? `<span class="badge-visualizzata">VISUALIZZATA</span>` : '';
       html += `<div class="file-row">
         <div class="file-icon">📄</div>
         <div class="file-info">
           <div class="file-name">${escapeHtml(it.name)}</div>
           <div class="file-meta">PDF</div>
         </div>
-        <button class="small success" onclick="apriOVisualizzaFattura(${idx})">Apri</button>
+        ${badgeVista}<button class="small success" data-fattura-idx="${idx}" onclick="apriOVisualizzaFattura(${idx})">Apri</button>
         ${delBtn}
       </div>`;
     });
@@ -751,17 +761,23 @@ async function showFatture(fornitoreId, fornitoreName) {
 
 function apriOVisualizzaFattura(idx) {
   const url = (window._fattureUrls || [])[idx];
+  const fullPath = (window._fatturePaths || [])[idx];
   if (!url) { toast('Errore: URL non trovato'); return; }
-  if (window.isAdmin) {
-    // Mostra banner prominente PRIMA di aprire
-    const banner = document.createElement('div');
-    banner.textContent = '✅ Fattura visualizzata';
-    banner.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#16a34a;color:#fff;font-size:22px;font-weight:700;padding:20px 36px;border-radius:14px;z-index:99999;box-shadow:0 8px 32px rgba(0,0,0,0.35);';
-    document.body.appendChild(banner);
-    setTimeout(() => { banner.remove(); window.open(url, '_blank'); }, 900);
-  } else {
-    window.open(url, '_blank');
+  if (window.isAdmin && fullPath) {
+    // Salva in localStorage
+    const viste = JSON.parse(localStorage.getItem('fattureViste') || '{}');
+    viste[fullPath] = true;
+    localStorage.setItem('fattureViste', JSON.stringify(viste));
+    // Aggiorna badge nella riga corrente senza ricaricare
+    const btn = document.querySelector('[data-fattura-idx="' + idx + '"]');
+    if (btn && !btn.parentElement.querySelector('.badge-visualizzata')) {
+      const badge = document.createElement('span');
+      badge.className = 'badge-visualizzata';
+      badge.textContent = 'VISUALIZZATA';
+      btn.parentElement.insertBefore(badge, btn);
+    }
   }
+  window.open(url, '_blank');
 }
 
 async function deleteFattura(fullPath, name) {
