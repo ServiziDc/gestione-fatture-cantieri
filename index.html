@@ -729,7 +729,8 @@ async function showFatture(fornitoreId, fornitoreName) {
     }));
     items.sort((a, b) => b.name.localeCompare(a.name));
     let html = '';
-    items.forEach(it => {
+    window._fattureUrls = items.map(i => i.url);
+    items.forEach((it, idx) => {
       const delBtn = window.isAdmin ? '' :
         `<button class="small danger" onclick="deleteFattura('${escapeAttr(it.fullPath)}','${escapeAttr(it.name)}')">🗑</button>`;
       html += `<div class="file-row">
@@ -738,7 +739,7 @@ async function showFatture(fornitoreId, fornitoreName) {
           <div class="file-name">${escapeHtml(it.name)}</div>
           <div class="file-meta">PDF</div>
         </div>
-        <button class="small success" onclick="apriOVisualizzaFattura('${escapeAttr(it.url)}','${escapeAttr(it.name)}')" >Apri</button>
+        <button class="small success" onclick="apriOVisualizzaFattura(${idx})">Apri</button>
         ${delBtn}
       </div>`;
     });
@@ -748,10 +749,16 @@ async function showFatture(fornitoreId, fornitoreName) {
   }
 }
 
-function apriOVisualizzaFattura(url, name) {
+function apriOVisualizzaFattura(idx) {
+  const url = (window._fattureUrls || [])[idx];
+  if (!url) { toast('Errore: URL non trovato'); return; }
   if (window.isAdmin) {
-    toast('📄 Fattura visualizzata ✓', 1800);
-    setTimeout(() => window.open(url, '_blank'), 400);
+    // Mostra banner prominente PRIMA di aprire
+    const banner = document.createElement('div');
+    banner.textContent = '✅ Fattura visualizzata';
+    banner.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#16a34a;color:#fff;font-size:22px;font-weight:700;padding:20px 36px;border-radius:14px;z-index:99999;box-shadow:0 8px 32px rgba(0,0,0,0.35);';
+    document.body.appendChild(banner);
+    setTimeout(() => { banner.remove(); window.open(url, '_blank'); }, 900);
   } else {
     window.open(url, '_blank');
   }
