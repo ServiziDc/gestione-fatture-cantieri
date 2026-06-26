@@ -749,9 +749,11 @@ async function showFatture(fornitoreId, fornitoreName) {
 }
 
 function apriOVisualizzaFattura(url, name) {
-  window.open(url, '_blank');
   if (window.isAdmin) {
-    toast('📄 Fattura visualizzata ✓');
+    toast('📄 Fattura visualizzata ✓', 1800);
+    setTimeout(() => window.open(url, '_blank'), 400);
+  } else {
+    window.open(url, '_blank');
   }
 }
 
